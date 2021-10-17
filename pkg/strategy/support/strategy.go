@@ -27,61 +27,8 @@ func init() {
 }
 
 type State struct {
-	Position *bbgo.Position `json:"position,omitempty"`
-}
-
-type Target struct {
-	ProfitPercentage      float64                         `json:"profitPercentage"`
-	QuantityPercentage    float64                         `json:"quantityPercentage"`
-	MarginOrderSideEffect types.MarginOrderSideEffectType `json:"marginOrderSideEffect"`
-}
-
-// PercentageTargetStop is a kind of stop order by setting fixed percentage target
-type PercentageTargetStop struct {
-	Targets []Target `json:"targets"`
-}
-
-// GenerateOrders generates the orders from the given targets
-func (stop *PercentageTargetStop) GenerateOrders(market types.Market, pos *bbgo.Position) []types.SubmitOrder {
-	var price = pos.AverageCost
-	var quantity = pos.Base
-
-	// submit target orders
-	var targetOrders []types.SubmitOrder
-	for _, target := range stop.Targets {
-		targetPrice := price.Float64() * (1.0 + target.ProfitPercentage)
-		targetQuantity := quantity.Float64() * target.QuantityPercentage
-		targetQuoteQuantity := targetPrice * targetQuantity
-
-		if targetQuoteQuantity <= market.MinNotional {
-			continue
-		}
-
-		if targetQuantity <= market.MinQuantity {
-			continue
-		}
-
-		targetOrders = append(targetOrders, types.SubmitOrder{
-			Symbol:   market.Symbol,
-			Market:   market,
-			Type:     types.OrderTypeLimit,
-			Side:     types.SideTypeSell,
-			Price:    targetPrice,
-			Quantity: targetQuantity,
-			MarginSideEffect: target.MarginOrderSideEffect,
-			TimeInForce:      "GTC",
-		})
-	}
-
-	return targetOrders
-}
-
-// ResistanceStop is a kind of stop order by detecting resistance
-type ResistanceStop struct {
-	Interval      types.Interval   `json:"interval"`
-	sensitivity   fixedpoint.Value `json:"sensitivity"`
-	MinVolume     fixedpoint.Value `json:"minVolume"`
-	TakerBuyRatio fixedpoint.Value `json:"takerBuyRatio"`
+	Position         *bbgo.Position   `json:"position,omitempty"`
+	LastBasePosition fixedpoint.Value `json:"lastBasePosition"`
 }
 
 type Strategy struct {
@@ -110,7 +57,11 @@ type Strategy struct {
 
 	ResistanceStop *ResistanceStop `json:"resistanceStop"`
 
-	ResistanceTakerBuyRatio fixedpoint.Value `json:"resistanceTakerBuyRatio"`
+	PercentageTargetStop *PercentageTargetStop `json:"percentageTargetStop"`
+
+	TrailingStop *TrailingStop `json:"trailingStop"`
+
+
 
 	// Min BaseAsset balance to keep
 	MinBaseAssetBalance fixedpoint.Value `json:"minBaseAssetBalance"`
@@ -120,10 +71,9 @@ type Strategy struct {
 
 	ScaleQuantity *bbgo.PriceVolumeScale `json:"scaleQuantity"`
 
-	tradeCollector *bbgo.TradeCollector
-
-	orderStore *bbgo.OrderStore
-	state      *State
+	tradeCollector            *bbgo.TradeCollector
+	sentOrders, closingOrders *bbgo.OrderStore
+	state                     *State
 
 	triggerEMA  *indicator.EWMA
 	longTermEMA *indicator.EWMA
@@ -184,19 +134,18 @@ func (s *Strategy) LoadState() error {
 	return nil
 }
 
-func (s *Strategy) submitOrders(ctx context.Context, orderExecutor bbgo.OrderExecutor, orderForms ...types.SubmitOrder) error {
+func (s *Strategy) submitOrders(ctx context.Context, orderExecutor bbgo.OrderExecutor, orderForms ...types.SubmitOrder) ([]types.Order, error) {
 	for _, o := range orderForms {
 		s.Notifiability.Notify(o)
 	}
 
 	createdOrders, err := orderExecutor.SubmitOrders(ctx, orderForms...)
 	if err != nil {
-		return err
+		return createdOrders, err
 	}
 
-	s.orderStore.Add(createdOrders...)
-	s.tradeCollector.Emit()
-	return nil
+	s.sentOrders.Add(createdOrders...)
+	return createdOrders, nil
 }
 
 func (s *Strategy) calculateQuantity(session *bbgo.ExchangeSession, side types.SideType, closePrice fixedpoint.Value, volume float64) (fixedpoint.Value, error) {
@@ -290,8 +239,13 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.longTermEMA = standardIndicatorSet.EWMA(s.LongTermMovingAverage)
 	}
 
-	s.orderStore = bbgo.NewOrderStore(s.Symbol)
-	s.orderStore.BindStream(session.UserDataStream)
+	s.sentOrders = bbgo.NewOrderStore(s.Symbol)
+	s.sentOrders.BindStream(session.UserDataStream)
+
+	s.closingOrders = bbgo.NewOrderStore(s.Symbol)
+	s.closingOrders.RemoveCancelled = true
+	s.closingOrders.RemoveFilled = true
+	s.closingOrders.BindStream(session.UserDataStream)
 
 	s.triggerEMA = standardIndicatorSet.EWMA(types.IntervalWindow{Interval: s.Interval, Window: s.MovingAverageWindow})
 
@@ -301,11 +255,19 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		s.Notify("%s state is restored => %+v", s.Symbol, s.state)
 	}
 
-	s.tradeCollector = bbgo.NewTradeCollector(s.Symbol, s.state.Position, s.orderStore)
+	s.tradeCollector = bbgo.NewTradeCollector(s.Symbol, s.state.Position, s.sentOrders)
+	s.tradeCollector.OnPositionUpdate(func(position *bbgo.Position) {
+		s.Notifiability.Notify(position)
+	})
+	s.tradeCollector.OnProfit(func(trade types.Trade, profit fixedpoint.Value, netProfit fixedpoint.Value) {
+		s.Notifiability.Notify(profit)
+	})
+	s.tradeCollector.OnTrade(func(trade types.Trade) {
+		s.Notifiability.Notify(trade)
+	})
 	s.tradeCollector.BindStream(session.UserDataStream)
 
-	// s.tradeCollector.BindStreamForBackground(session.UserDataStream)
-	// go s.tradeCollector.Run(ctx)
+	s.state.LastBasePosition = s.state.Position.Base
 
 	session.MarketDataStream.OnKLineClosed(func(kline types.KLine) {
 		// skip k-lines from other symbols
@@ -314,6 +276,26 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 		}
 		if kline.Interval != s.Interval {
 			return
+		}
+
+		// Update the target orders if the submit orders are filled
+		// if all orders are filled, it means the position is updated.
+		if s.state.Position.Base != s.state.LastBasePosition {
+			if orders := s.closingOrders.Orders(); len(orders) > 0 {
+				if err := session.Exchange.CancelOrders(ctx, orders...) ; err != nil {
+					log.WithError(err).Error("failed to cancel closing orders")
+				}
+			}
+
+			if s.PercentageTargetStop != nil {
+				targetOrderForms := s.PercentageTargetStop.GenerateOrders(nil, nil, s.Market, s.state.Position)
+				createdOrders, err := s.submitOrders(ctx, orderExecutor, targetOrderForms...)
+				if err != nil {
+					log.WithError(err).Error("submit profit target order error")
+				} else {
+					s.closingOrders.Add(createdOrders...)
+				}
+			}
 		}
 
 		closePriceF := kline.GetClose()
@@ -381,41 +363,8 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 			kline.TakerBuyBaseAssetVolume,
 			orderForm)
 
-		if err := s.submitOrders(ctx, orderExecutor, orderForm); err != nil {
+		if _, err := s.submitOrders(ctx, orderExecutor, orderForm); err != nil {
 			log.WithError(err).Error("submit order error")
-			return
-		}
-
-		// submit target orders
-		var targetOrders []types.SubmitOrder
-		for _, target := range s.Targets {
-			targetPrice := closePrice.Float64() * (1.0 + target.ProfitPercentage)
-			targetQuantity := quantity.Float64() * target.QuantityPercentage
-			targetQuoteQuantity := targetPrice * targetQuantity
-
-			if targetQuoteQuantity <= market.MinNotional {
-				continue
-			}
-
-			if targetQuantity <= market.MinQuantity {
-				continue
-			}
-
-			targetOrders = append(targetOrders, types.SubmitOrder{
-				Symbol:   kline.Symbol,
-				Market:   market,
-				Type:     types.OrderTypeLimit,
-				Side:     types.SideTypeSell,
-				Price:    targetPrice,
-				Quantity: targetQuantity,
-
-				MarginSideEffect: target.MarginOrderSideEffect,
-				TimeInForce:      "GTC",
-			})
-		}
-
-		if err := s.submitOrders(ctx, orderExecutor, targetOrders...); err != nil {
-			log.WithError(err).Error("submit profit target order error")
 			return
 		}
 	})
