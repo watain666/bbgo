@@ -16,6 +16,8 @@ type Grid struct {
 
 	// Pins are the pinned grid prices, from low to high
 	Pins []fixedpoint.Value `json:"pins"`
+
+	pinsCache map[fixedpoint.Value]struct{} `json:"-"`
 }
 
 func NewGrid(lower, upper, density fixedpoint.Value) *Grid {
@@ -27,13 +29,27 @@ func NewGrid(lower, upper, density fixedpoint.Value) *Grid {
 		pins = append(pins, p)
 	}
 
-	return &Grid{
+	grid := &Grid{
 		UpperPrice: upper,
 		LowerPrice: lower,
 		Size:       density,
 		Spread:     size,
 		Pins:       pins,
+		pinsCache:  make(map[fixedpoint.Value]struct{}, len(pins)),
 	}
+	grid.updatePinsCache()
+	return grid
+}
+
+func (g *Grid) updatePinsCache() {
+	for _, pin := range g.Pins {
+		g.pinsCache[pin] = struct{}{}
+	}
+}
+
+func (g *Grid) HasPin(pin fixedpoint.Value) (ok bool) {
+	_, ok = g.pinsCache[pin]
+	return ok
 }
 
 func (g *Grid) ExtendUpperPrice(upper fixedpoint.Value) (newPins []fixedpoint.Value) {
@@ -42,12 +58,13 @@ func (g *Grid) ExtendUpperPrice(upper fixedpoint.Value) (newPins []fixedpoint.Va
 	// since the grid is extended, the size should be updated as well
 	g.Size = (g.UpperPrice - g.LowerPrice).Div(g.Spread).Floor()
 
-	lastPin := g.Pins[ len(g.Pins) - 1 ]
+	lastPin := g.Pins[len(g.Pins)-1]
 	for p := lastPin + g.Spread; p <= g.UpperPrice; p += g.Spread {
 		newPins = append(newPins, p)
 	}
 
 	g.Pins = append(g.Pins, newPins...)
+	g.updatePinsCache()
 	return newPins
 }
 
@@ -68,5 +85,6 @@ func (g *Grid) ExtendLowerPrice(lower fixedpoint.Value) (newPins []fixedpoint.Va
 	}
 
 	g.Pins = append(newPins, g.Pins...)
+	g.updatePinsCache()
 	return newPins
 }

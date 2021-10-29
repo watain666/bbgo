@@ -20,6 +20,17 @@ func TestNewGrid(t *testing.T) {
 	}
 }
 
+func TestGrid_HasPin(t *testing.T) {
+	upper := fixedpoint.NewFromFloat(500.0)
+	lower := fixedpoint.NewFromFloat(100.0)
+	size := fixedpoint.NewFromFloat(100.0)
+	grid := NewGrid(lower, upper, size)
+
+	assert.True(t, grid.HasPin(fixedpoint.NewFromFloat(100.0)))
+	assert.True(t, grid.HasPin(fixedpoint.NewFromFloat(500.0)))
+	assert.False(t, grid.HasPin(fixedpoint.NewFromFloat(101.0)))
+}
+
 func TestGrid_ExtendUpperPrice(t *testing.T) {
 	upper := fixedpoint.NewFromFloat(500.0)
 	lower := fixedpoint.NewFromFloat(100.0)
