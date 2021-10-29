@@ -53,7 +53,7 @@ func TestGrid_ExtendLowerPrice(t *testing.T) {
 
 	// 100 = (2000-1000) / 10
 	if assert.Len(t, newPins, 100) {
-		assert.Equal(t, fixedpoint.NewFromFloat(2000.0) - expectedSpread, newPins[99])
+		assert.Equal(t, fixedpoint.NewFromFloat(2000.0)-expectedSpread, newPins[99])
 	}
 
 	assert.Equal(t, expectedSpread, grid.Spread)
@@ -61,4 +61,8 @@ func TestGrid_ExtendLowerPrice(t *testing.T) {
 		assert.Equal(t, fixedpoint.NewFromFloat(1000.0), grid.Pins[0])
 		assert.Equal(t, fixedpoint.NewFromFloat(3000.0), grid.Pins[200])
 	}
+
+	newPins2 := grid.ExtendLowerPrice(
+		fixedpoint.NewFromFloat(1000.0 - 1.0))
+	assert.Len(t, newPins2, 0) // should have no new pin generated
 }

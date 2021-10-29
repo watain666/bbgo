@@ -40,7 +40,7 @@ func (g *Grid) ExtendUpperPrice(upper fixedpoint.Value) (newPins []fixedpoint.Va
 	g.UpperPrice = upper
 
 	// since the grid is extended, the size should be updated as well
-	g.Size = (g.UpperPrice - g.LowerPrice).Div(g.Spread).Ceil()
+	g.Size = (g.UpperPrice - g.LowerPrice).Div(g.Spread).Floor()
 
 	lastPin := g.Pins[ len(g.Pins) - 1 ]
 	for p := lastPin + g.Spread; p <= g.UpperPrice; p += g.Spread {
@@ -55,10 +55,13 @@ func (g *Grid) ExtendLowerPrice(lower fixedpoint.Value) (newPins []fixedpoint.Va
 	g.LowerPrice = lower
 
 	// since the grid is extended, the size should be updated as well
-	g.Size = (g.UpperPrice - g.LowerPrice).Div(g.Spread).Ceil()
+	g.Size = (g.UpperPrice - g.LowerPrice).Div(g.Spread).Floor()
 
 	firstPin := g.Pins[0]
-	numToAdd := (firstPin - g.LowerPrice).Div(g.Spread).Ceil()
+	numToAdd := (firstPin - g.LowerPrice).Div(g.Spread).Floor()
+	if numToAdd == 0 {
+		return newPins
+	}
 
 	for p := firstPin - g.Spread.Mul(numToAdd); p < firstPin; p += g.Spread {
 		newPins = append(newPins, p)
