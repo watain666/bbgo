@@ -41,6 +41,18 @@ func NewGrid(lower, upper, density fixedpoint.Value) *Grid {
 	return grid
 }
 
+func (g *Grid) Above(price fixedpoint.Value) bool {
+	return price > g.UpperPrice
+}
+
+func (g *Grid) Below(price fixedpoint.Value) bool {
+	return price < g.LowerPrice
+}
+
+func (g *Grid) OutOfRange(price fixedpoint.Value) bool {
+	return price < g.LowerPrice || price > g.UpperPrice
+}
+
 func (g *Grid) updatePinsCache() {
 	for _, pin := range g.Pins {
 		g.pinsCache[pin] = struct{}{}
