@@ -85,6 +85,13 @@ type Strategy struct {
 	boll *indicator.BOLL
 
 	CancelProfitOrdersOnShutdown bool `json: "shutdownCancelProfitOrders"`
+
+
+
+	MinVolume           fixedpoint.Value `json:"minVolume"`
+	MinLowerShadowRatio fixedpoint.Value `json:"minLowerShadowRatio"`
+
+	grid *Grid
 }
 
 func (s *Strategy) ID() string {
@@ -109,7 +116,7 @@ func (s *Strategy) Validate() error {
 }
 
 func (s *Strategy) Subscribe(session *bbgo.ExchangeSession) {
-	// currently we need the 1m kline to update the last close price and indicators
+	// Currently we need the 1m kline to update the last close price and indicators
 	session.Subscribe(types.KLineChannel, s.Symbol, types.SubscribeOptions{Interval: s.Interval.String()})
 
 	if len(s.RepostInterval) > 0 && s.Interval != s.RepostInterval {
@@ -378,11 +385,35 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 
 	// avoid using time ticker since we will need back testing here
 	session.MarketDataStream.OnKLineClosed(func(kline types.KLine) {
-		// skip kline events that does not belong to this symbol
-		if kline.Symbol != s.Symbol {
-			log.Infof("%s != %s", kline.Symbol, s.Symbol)
+		// skip kline events that does not belong to this symbol and interval
+		if kline.Symbol != s.Symbol || kline.Interval != s.Interval {
 			return
 		}
+
+		if kline.Volume < s.MinVolume.Float64() {
+			return
+		}
+
+		if s.MinLowerShadowRatio > 0 {
+			// We can use this later
+			// kline.GetLowerShadowRatio()
+		}
+
+		// TODO: 1) Find the previous top and then find the bottom of the previous top
+		dataStore, ok := session.MarketDataStore(s.Symbol)
+		if !ok {
+			log.Errorf("market data store %s does not exist", s.Symbol)
+			return
+		}
+
+		klines := dataStore.KLineWindows[s.Interval]
+		_ = klines
+
+		// TODO: 2) Allocate grid object here
+
+		// TODO: 3) Market order to increase inventory
+
+		// TODO: 4) Place grid orders
 
 		if s.RepostInterval != "" {
 			// see if we have enough balances and then we create limit orders on the up band and the down band.
@@ -396,4 +427,31 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 	})
 
 	return nil
+}
+
+func findTopKLine(kLines types.KLineWindow, window int) (tops []types.KLine) {
+	if len(kLines) < window {
+		return tops
+	}
+
+NextKLine:
+	for i := len(kLines) - window - 1 ; i > window ; i-- {
+		cur := kLines[i]
+		for j := 1; j < window ; j++ {
+			left := kLines[i - j]
+			if left.High > cur.High {
+				continue NextKLine
+			}
+
+			right := kLines[i + j]
+			if right.High > cur.High {
+				continue NextKLine
+			}
+		}
+
+		// if we get here, it means it's the local top
+		tops = append(tops, cur)
+	}
+
+	return tops
 }
