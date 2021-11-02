@@ -406,8 +406,9 @@ func (s *Strategy) Run(ctx context.Context, orderExecutor bbgo.OrderExecutor, se
 			return
 		}
 
-		klines := dataStore.KLineWindows[s.Interval]
-		_ = klines
+		kLines := dataStore.KLineWindows[s.Interval]
+		tops := findTopKLine(kLines, 10)
+		_ = tops
 
 		// TODO: 2) Allocate grid object here
 
